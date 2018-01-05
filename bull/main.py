@@ -82,7 +82,9 @@ def create(src, part=None, offset=None, size=None,
     try:
         backing = zram.ZramDevice(size=backing_size)
         snap = mapper.MapperDevice(name)
+        snap.create()
         base = mapper.MapperDevice('{}-base'.format(snap.name))
+        base.create()
         base.load("0 {} linear {} {}".format(
             size, src, offset
         ))
@@ -98,17 +100,25 @@ def create(src, part=None, offset=None, size=None,
 @click.argument('name')
 def remove(name):
     snap = mapper.MapperDevice(name=name)
+    if not snap.exists():
+        raise click.ClickException('device {} does not exist'.format(name))
+
     if blockdev.is_mounted(snap.device):
         subprocess.check_call(['umount', str(snap.device)])
 
     base = mapper.MapperDevice(name='{}-base'.format(name))
+    backingdevnum = snap.table()[0].split()[4].decode('utf-8').split(':')[1]
+    backing = zram.ZramDevice(devnum=backingdevnum)
     srcdevnum = base.table()[0].split()[3].decode('utf-8')
     srcdev = blockdev.devnum_to_name(srcdevnum)
     loopdev = loop.LoopDevice(device='/dev/{}'.format(srcdev))
 
     snap.remove()
+    backing.remove()
     base.remove()
     loopdev.remove()
+
+    print('removed', name)
 
 
 @cli.command()
