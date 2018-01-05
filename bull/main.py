@@ -49,11 +49,11 @@ def cli(loglevel=None):
 @click.option('--part', '-p', type=Size())
 @click.option('--offset', '-o', type=Size(), default=0)
 @click.option('--backing-size', '-b', type=Size())
-@click.option('--size', '-s', type=Size())
+@click.option('--snap-size', '-s', type=Size())
 @click.option('--name', '-n')
 @click.argument('src')
-def create(src, part=None, offset=None, size=None,
-           name=None, backing_size=None):
+def create(src, part=None, offset=None, snap_size=None,
+           backing_size=None, name=None):
 
     '''Create a snapshot of the given source.
 
@@ -68,62 +68,70 @@ def create(src, part=None, offset=None, size=None,
     src = Path(src)
 
     if not src.is_block_device():
-        loopdev = loop.LoopDevice(src=src)
-        loopdev.create()
-
+        loopdev = loop.LoopDevice.create(src)
         LOG.info('mapped %s to %s', src, loopdev.device)
-        src = loopdev.device
+        src = loopdev
+    else:
+        src = blockdev.BlockDevice(src)
 
     if part is not None:
-        offset = blockdev.get_part_offset_sectors(src, part)
-        datasize = blockdev.get_part_size_sectors(src, part)
+        offset = src.get_part_offset_sectors(part)
+        data_sectors = src.get_part_size_sectors(part)
     else:
-        datasize = blockdev.get_size_sectors(src) - offset
+        data_sectors = src.get_size_sectors() - offset
 
-    if size is None:
-        size = datasize
-    elif size < datasize:
-        raise ValueError('requested size cannot be smaller than source')
+    data_size = data_sectors * 512
 
-    size_sectors = int(size / 1024 * 2)
+    if snap_size is None:
+        snap_size = data_size
+    else:
+        if snap_size < data_size:
+            raise ValueError('requested size cannot be smaller than source')
+
+    snap_sectors = snap_size // 512
 
     if backing_size is None:
-        backing_size = int(min(size * 0.25, MAX_BACKING_SIZE))
+        backing_size = int(min(snap_size * 0.25, MAX_BACKING_SIZE))
 
-    LOG.debug('part %s offset %s datasize %s size %s '
-              'size_sectors %s backing_size %s',
-              part, offset, datasize, size, size_sectors, backing_size)
+    LOG.debug('part %s offset %s data_sectors %s data_size %s',
+              part, offset, data_sectors, data_size)
+    LOG.debug('snap_size %s snap_sectors %s backing_size %s',
+              snap_size, snap_sectors, backing_size)
 
     try:
         # We reserve a device name by creating a dm device with no table.
-        snap = mapper.MapperDevice(name)
-        snap.create()
+        snap = mapper.MapperDevice.create_first_available()
 
         # Now that we have reserved a device name, we can create the
         # base device. This is a simple linear mapping onto the source,
         # possibly with an offset applied if either --offset or --part
         # were used.
-        base = mapper.MapperDevice('{}-base'.format(snap.name))
-        base.create()
-        table = [
-            "0 {} linear {} {}".format(datasize, src, offset),
-        ]
+        base = mapper.MapperDevice.create('{}-base'.format(snap.device.name))
+        base.table.append(
+            mapper.Segment(0, data_sectors,
+                           mapper.Linear(src.device, offset)))
 
-        if size_sectors > datasize:
-            table.append("{} {} zero".format(datasize, (size_sectors - datasize)))
+        if snap_sectors > data_sectors:
+            base.table.append(
+                mapper.Segment(data_sectors, (snap_sectors - data_sectors),
+                               mapper.Zero()))
 
-        base.load('\n'.join(table))
+        base.load()
 
         # Create a ramdisk for use as the snapshow backing store.
-        backing = zram.ZramDevice(size=backing_size)
+        backing = zram.ZramDevice.create()
+        backing.size = backing_size
 
         # And finally create the snapshot itself.
-        snap.snapshot(base.device, backing.device)
-    except mapper.CommandFailed as e:
-        LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
+        snap.table.append(
+            mapper.Segment(0, snap_sectors,
+                           mapper.Snapshot(base.device, backing.device)))
+        snap.load()
+    except subprocess.CalledProcessError as e:
+        LOG.error('%s: %s', e, e.stderr.decode('utf-8'))
         sys.exit(1)
 
-    print('created', snap.name, snap.device)
+    print('created', snap.device)
 
 
 @cli.command()
@@ -136,22 +144,28 @@ def remove(name):
     mounted, attempt to unmount it first.
     '''
 
-    snap = mapper.MapperDevice(name=name)
+    snap = mapper.MapperDevice.create(name)
     if not snap.exists():
         raise click.ClickException('device {} does not exist'.format(name))
+    snap.table.resolve()
 
-    if blockdev.is_mounted(snap.device):
+    if snap.is_mounted():
         LOG.info('unmounting %s', name)
         subprocess.check_call(['umount', str(snap.device)])
 
-    base = mapper.MapperDevice(name='{}-base'.format(name))
-    backingdevnum = snap.table()[0].split()[4].decode('utf-8').split(':')[1]
-    backing = zram.ZramDevice(devnum=backingdevnum)
-    srcdevnum = base.table()[0].split()[3].decode('utf-8')
-    srcdev = blockdev.devnum_to_name(srcdevnum)
+    base = mapper.MapperDevice.create('{}-base'.format(name))
+    base.table.resolve()
 
-    if srcdev.startswith('loop'):
-        loopdev = loop.LoopDevice(device='/dev/{}'.format(srcdev))
+    backingdev = snap.table[0].target.backing
+    srcdev = base.table[0].target.device
+
+    LOG.debug('got source device %s', srcdev)
+    LOG.debug('got backing device %s', backingdev)
+
+    backing = zram.ZramDevice(backingdev)
+
+    if srcdev.startswith('/dev/loop'):
+        loopdev = loop.LoopDevice(srcdev)
     else:
         loopdev = None
 
@@ -162,8 +176,8 @@ def remove(name):
 
         if loopdev:
             loopdev.remove()
-    except mapper.CommandFailed as e:
-        LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
+    except subprocess.CalledProcessError as e:
+        LOG.error('%s: %s', e, e.stderr.decode('utf-8'))
         sys.exit(1)
 
     print('removed', name)
@@ -175,8 +189,8 @@ def list():
 
     try:
         print('\n'.join(mapper.list_devices()))
-    except mapper.CommandFailed as e:
-        LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
+    except subprocess.CalledProcessError as e:
+        LOG.error('%s: %s', e, e.stderr.decode('utf-8'))
         sys.exit(1)
 
 

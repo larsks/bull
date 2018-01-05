@@ -1,77 +1,44 @@
-import functools
 import logging
 from pathlib import Path
 
-from bull.exceptions import NoSuchDevice
+from bull.blockdev import BlockDevice
 
 LOG = logging.getLogger(__name__)
 
 
-def check_exists(func):
-    @functools.wraps(func)
-    def _(self, *args, **kwargs):
-        self._check_exists()
-        return func(self, *args, **kwargs)
-
-    return _
+def check_zram_available():
+    return Path('/sys/class/zram-control').exists()
 
 
-class ZramDevice():
-    def __init__(self, devnum=None, size=None):
-        if devnum is None:
-            devnum = self.allocate_device()
+class ZramDevice(BlockDevice):
+    control_path = Path('/sys/class/zram-control')
 
-        self.devnum = devnum
-        self.name = 'zram{}'.format(devnum)
-        self.path = Path('/sys/block/zram{}'.format(devnum))
-        self.device = '/dev/zram{}'.format(devnum)
+    @classmethod
+    def create(kls, minor=None):
+        if minor is None:
+            with (kls.control_path / 'hot_add').open() as fd:
+                minor = fd.read().strip()
 
-        if size is not None:
-            self.size = size
+        return kls('/dev/zram{}'.format(minor))
 
-    def allocate_device(self):
-        control = Path('/sys/class/zram-control/hot_add')
-        with control.open() as fd:
-            dev = fd.readline()
+    def remove(self):
+        with (self.control_path / 'hot_remove').open('w') as fd:
+            fd.write('{}'.format(self.minor))
 
-        LOG.debug('allocated zram device: %s', dev)
-        return int(dev)
-
-    def _check_exists(self):
-        if not self.path.exists():
-            raise NoSuchDevice(self.name)
-
-    @check_exists
     def get_size(self):
-        sizepath = self.path / 'disksize'
-        with sizepath.open() as fd:
-            size = fd.readline()
+        with (self.sysfs / 'disksize').open() as fd:
+            size = fd.readline().strip()
 
         return int(size)
 
-    @check_exists
     def set_size(self, size):
-        sizepath = self.path / 'disksize'
-        with sizepath.open('w') as fd:
+        with (self.sysfs / 'disksize').open('w') as fd:
             fd.write('{}'.format(size))
-            fd.write('\n')
 
     size = property(get_size, set_size)
 
-    @check_exists
-    def remove(self):
-        control = Path('/sys/class/zram-control/hot_remove')
-        with control.open('w') as fd:
-            fd.write('{}'.format(self.devnum))
-            fd.write('\n')
-
-    @check_exists
     def reset(self):
-        control = self.path / 'reset'
-        with control.open('w') as fd:
+        with (self.sysfs / 'reset').open('w') as fd:
             fd.write('1')
-            fd.write('\n')
 
 
-def check_zram_available():
-    return Path('/sys/class/zram-control').exists()

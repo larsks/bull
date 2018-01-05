@@ -1,84 +1,8 @@
 import json
-import logging
-import math
 from pathlib import Path
 import subprocess
 
-LOG = logging.getLogger(__name__)
-
-
-def get_sector_size(path):
-    path = Path(path)
-
-    if path.is_block_device():
-        p = subprocess.run(['blockdev', '--getss', str(path)],
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-
-        ssize = p.stdout.decode('utf-8').strip()
-        return int(ssize)
-    else:
-        return 512
-
-
-def get_size_bytes(path):
-    path = Path(path)
-
-    if path.is_block_device():
-        p = subprocess.run(['blockdev', '--getsize64', str(path)],
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-
-        return int(p.stdout.decode('utf-8').strip())
-    else:
-        return path.stat().st_size
-
-
-def get_size_sectors(path):
-    path = Path(path)
-
-    if path.is_block_device():
-        p = subprocess.run(['blockdev', '--getsz', str(path)],
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-
-        return int(p.stdout.decode('utf-8').strip())
-    else:
-        return math.ceil(path.stat().st_size / 512)
-
-
-def get_part_table(path):
-    LOG.debug('getting partition table for %s', path)
-    p = subprocess.run(['sfdisk', '--json', str(path)],
-                       stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
-
-    table = json.loads(p.stdout.decode('utf-8'))
-    return table
-
-
-def get_part_offset_sectors(path, partnum):
-    table = get_part_table(path)
-    return table['partitiontable']['partitions'][partnum - 1]['start']
-
-
-def get_part_offset_bytes(path, partnum):
-    sectors = get_part_offset_sectors(path, partnum)
-    ssize = get_sector_size(path)
-
-    return sectors * ssize
-
-
-def get_part_size_sectors(path, partnum):
-    table = get_part_table(path)
-    return table['partitiontable']['partitions'][partnum - 1]['size']
-
-
-def get_part_size_bytes(path, partnum):
-    sectors = get_part_size_sectors(path, partnum)
-    ssize = get_sector_size(path)
-
-    return sectors * ssize
+from bull.exceptions import NoPartitionMap
 
 
 def get_mounts():
@@ -87,19 +11,95 @@ def get_mounts():
         for line in fd:
             line = line.split()
             mounts.append((line[0], line[1]))
-
     return mounts
 
 
-def is_mounted(device):
-    mounts = {dev: path
-              for dev, path in get_mounts()}
+class BlockDevice():
 
-    return str(device) in mounts
+    def __init__(self, device):
+        self.device = Path(device)
 
+    def get_device_info(self):
+        with (self.sysfs / 'dev').open() as fd:
+            return (int(x) for x in (fd.read().strip().split(':')))
 
-def devnum_to_name(devnum):
-    with open('/sys/dev/block/{}/uevent'.format(devnum)) as fd:
-        uevent = {k: v.strip() for k, v in [line.split('=', 1) for line in fd]}
+    @property
+    def sysfs(self):
+        return Path('/sys/block') / self.realdevice.name
 
-    return uevent['DEVNAME']
+    @property
+    def realdevice(self):
+        return self.device.resolve()
+
+    @property
+    def major(self):
+        major, minor = self.get_device_info()
+        return major
+
+    @property
+    def minor(self):
+        major, minor = self.get_device_info()
+        return minor
+
+    def get_sector_size(self):
+        p = subprocess.run(['blockdev', '--getss', str(self.device)],
+                           check=True,
+                           stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+
+        return int(p.stdout.decode('ascii').strip())
+
+    def get_size_bytes(self):
+        p = subprocess.run(['blockdev', '--getsize64', str(self.device)],
+                           check=True,
+                           stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+
+        return int(p.stdout.decode('ascii').strip())
+
+    def get_size_sectors(self):
+        p = subprocess.run(['blockdev', '--getsz', str(self.device)],
+                           check=True,
+                           stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+
+        return int(p.stdout.decode('ascii').strip())
+
+    def get_part_table(self):
+        try:
+            p = subprocess.run(['sfdisk', '--json', str(self.device)],
+                               check=True,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            raise NoPartitionMap(self)
+
+        table = json.loads(p.stdout.decode('ascii'))
+        return table
+
+    def get_part_offset_sectors(self, partnum):
+        table = self.get_part_table()
+        return table['partitiontable']['partitions'][partnum - 1]['start']
+
+    def get_part_size_sectors(self, partnum):
+        table = self.get_part_table()
+        return table['partitiontable']['partitions'][partnum - 1]['size']
+
+    def get_part_size_bytes(self, partnum):
+        sectors = self.get_part_size_sectors()
+        ssize = self.get_sector_size()
+        return sectors * ssize
+
+    def exists(self):
+        return self.device.exists()
+
+    def is_mounted(self):
+        mounts = {dev: path
+                  for dev, path in get_mounts()}
+
+        return str(self.device) in mounts
+
+    def __repr__(self):
+        return '<{} {}>'.format(
+            self.__class__.__name__,
+            self.device)

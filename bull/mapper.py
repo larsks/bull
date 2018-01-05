@@ -1,112 +1,214 @@
-import functools
+import attr
 import logging
-from pathlib import Path
 import subprocess
 
-from bull import blockdev
-from bull.exceptions import CommandFailed, NoSuchDevice
+from bull.blockdev import BlockDevice
+from bull.exceptions import NoDevicesAvailable, DeviceExists
 
 LOG = logging.getLogger(__name__)
 MAX_DEVICES = 10
 
 
-class MapperError(Exception):
-    pass
-
-
-class NoDevicesAvailable(MapperError):
-    pass
-
-
-def mapper(*args, input=None):
+def dmsetup(*args, input=None):
     cli = ['dmsetup'] + [str(arg) for arg in args]
-    LOG.debug('running command: %s', cli)
-    res = subprocess.run(cli,
-                         stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE,
-                         input=input)
-    if res.returncode != 0:
-        raise CommandFailed(' '.join(cli), res)
+    LOG.debug('running command: %s', ' '.join(cli))
+    if input is not None:
+        LOG.debug('with input: %s', repr(input))
 
-    return res
-
-
-def check_exists(func):
-    @functools.wraps(func)
-    def _(self, *args, **kwargs):
-        if not self.exists():
-            raise NoSuchDevice()
-        return func(self, *args, **kwargs)
-
-    return _
+    return subprocess.run(cli,
+                          check=True,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE,
+                          input=input)
 
 
-class MapperDevice():
-    def __init__(self, name=None, prefix='bull'):
-        self.prefix = prefix
-        self.name = name
+def resolve_device(dev):
+    if dev.startswith('/dev'):
+        return dev
 
-    @property
-    def device(self):
-        return '/dev/mapper/{}'.format(self.name)
+    try:
+        with open('/sys/dev/block/{}/dm/name'.format(dev)) as fd:
+            name = fd.read().strip()
+            return '/dev/mapper/{}'.format(name)
+    except FileNotFoundError:
+        with open('/sys/dev/block/{}/uevent'.format(dev)) as fd:
+            uevent = {k: v.strip() for k, v in [line.split('=', 1)
+                                                for line in fd]}
 
-    def exists(self):
-        try:
-            mapper('status', self.name)
-        except CommandFailed:
-            return False
-        else:
-            return True
-
-    @check_exists
-    def remove(self):
-        mapper('remove', self.name)
-
-    def create(self):
-        if self.name is None:
-            self.find_next_device()
-        elif not self.exists():
-            mapper('create', '-n', self.name)
-
-    def find_next_device(self):
-        devnum = 0
-        while True:
-            name = '{}{}'.format(self.prefix, devnum)
-            try:
-                mapper('create', '-n', name)
-                break
-            except CommandFailed:
-                pass
-
-            devnum += 1
-            if devnum > MAX_DEVICES:
-                raise NoDevicesAvailable()
-
-        self.name = name
-
-    def load(self, table):
-        mapper('suspend', self.name)
-        mapper('load', self.name, input=table.encode('ascii'))
-        mapper('resume', self.name)
-
-    def table(self):
-        res = mapper('table', self.name)
-        return res.stdout.splitlines()
-
-    def snapshot(self, srcdev, backingdev, size=None, chunksize=16):
-        if size is None:
-            size = blockdev.get_size_sectors(srcdev)
-
-        t = '0 {size} snapshot {srcdev} {backingdev} N {chunksize}'.format(
-            srcdev=srcdev, backingdev=backingdev,
-            size=size, chunksize=chunksize)
-
-        self.load(t)
+        return '/dev/{DEVNAME}'.format(**uevent)
 
 
 def list_devices(prefix='bull'):
-    res = mapper('ls', '--target', 'snapshot')
-    out = res.stdout.decode('utf-8')
-    return [line.split()[0]
-            for line in out.splitlines()
-            if line.startswith(prefix)]
+    p = dmsetup('ls', '--target', 'snapshot')
+    return [line.split()[0].decode('ascii') for line in p.stdout.splitlines()]
+
+
+class Table(list):
+    @classmethod
+    def from_string(kls, table):
+        return kls([Segment.from_string(segment)
+                    for segment in table.splitlines()
+                    if segment.strip()])
+
+    def resolve(self):
+        for segment in self:
+            segment.target.resolve()
+
+    def __str__(self):
+        return '\n'.join(str(x) for x in self)
+
+
+@attr.s
+class Segment():
+    start = attr.ib(converter=int)
+    sectors = attr.ib(converter=int)
+    target = attr.ib()
+
+    @classmethod
+    def from_string(kls, segment):
+        start, size, target = segment.split(None, 2)
+        return kls(start, size, Target.from_string(target))
+
+    def __str__(self):
+        return '{self.start} {self.sectors} {self.target}'.format(self=self)
+
+
+@attr.s
+class Target():
+    device_attrs = []
+
+    @classmethod
+    def from_string(kls, target):
+        _type, *args = target.split()
+
+        if _type == 'linear':
+            return Linear(*args)
+        elif _type == 'snapshot':
+            return Snapshot(*args)
+        elif _type == 'zero':
+            return Zero(*args)
+        elif _type == 'thin-pool':
+            return Thinpool(*args)
+        elif _type == 'thin':
+            return Thin(*args)
+        else:
+            raise ValueError('unknown target description: {}'.format(target))
+
+    def resolve(self):
+        for attrname in self.device_attrs:
+            setattr(self, attrname,
+                    resolve_device(getattr(self, attrname)))
+
+    def __str__(self):
+        target_type = self.__class__.__name__.lower()
+        attrs = [target_type] + [getattr(self, x.name)
+                                 for x in attr.fields(self.__class__)]
+        return ' '.join(str(x) for x in attrs if x is not None)
+
+
+@attr.s
+class Zero(Target):
+    pass
+
+
+@attr.s
+class Linear(Target):
+    device_attrs = ['device']
+
+    device = attr.ib(converter=str)
+    offset = attr.ib(converter=int, default=0)
+
+
+@attr.s
+class Snapshot(Target):
+    device_attrs = ['origin', 'backing']
+
+    def persistent_converter(arg):
+        if isinstance(arg, str) and arg.upper() in 'PN':
+            return arg.upper()
+        elif isinstance(arg, bool):
+            return 'P' if arg else 'N'
+        else:
+            raise ValueError(arg)
+
+    origin = attr.ib(converter=str)
+    backing = attr.ib(converter=str)
+    persistent = attr.ib(converter=persistent_converter, default=False)
+    chunksize = attr.ib(converter=int, default=16)
+
+
+@attr.s
+class Thinpool(Target):
+    device_attrs = ['metadata_dev', 'data_dev']
+
+    metadata_dev = attr.ib(converter=str)
+    data_dev = attr.ib(converter=str)
+    blocksize = attr.ib(converter=int)
+    lwm = attr.ib(converter=int)
+    argc = attr.ib(converter=int)
+
+
+@attr.s
+class Thin(Target):
+    device_attrs = ['pool_dev']
+
+    pool_dev = attr.ib(converter=str)
+    dev_id = attr.ib(converter=int)
+    origin = attr.ib(default=None)
+
+
+class MapperDevice(BlockDevice):
+    '''A device-mapper device.
+
+    See https://www.kernel.org/doc/Documentation/device-mapper/ for
+    more information.
+    '''
+
+    def __init__(self, device):
+        super().__init__(device)
+        self.table = self.get_table_from_device()
+
+    def get_table_from_device(self):
+        res = dmsetup('table', self.device.name)
+        return Table.from_string(res.stdout.decode('ascii'))
+
+    @classmethod
+    def create(kls, name, exclusive=False):
+        try:
+            dmsetup('status', name)
+            if exclusive:
+                raise DeviceExists(name)
+        except subprocess.CalledProcessError:
+            dmsetup('create', name, '--notable')
+
+        return kls('/dev/mapper/{}'.format(name))
+
+    @classmethod
+    def create_first_available(kls, prefix='bull'):
+        LOG.debug('looking for available device')
+        for devnum in range(MAX_DEVICES):
+            devname = '{}{}'.format(prefix, devnum)
+            LOG.debug('checking device %s', devname)
+            try:
+                dmsetup('create', devname, '--notable')
+            except subprocess.CalledProcessError:
+                pass
+            else:
+                LOG.debug('found device %s', devname)
+                break
+        else:
+            raise NoDevicesAvailable()
+
+        return kls('/dev/mapper/{}'.format(devname))
+
+    def remove(self):
+        dmsetup('remove', self.device.name)
+
+    def load(self):
+        dmsetup('suspend', self.device.name)
+        dmsetup('load', self.device.name,
+                input=str(self.table).encode('ascii'))
+        dmsetup('resume', self.device.name)
+
+    def refresh(self):
+        self.table = self.get_table_from_device()
