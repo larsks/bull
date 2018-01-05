@@ -1,8 +1,7 @@
 import logging
-from pathlib import Path
 import subprocess
 
-from bull.exceptions import CommandFailed, NoSuchDevice
+from bull.exceptions import CommandFailed
 
 LOG = logging.getLogger(__name__)
 
