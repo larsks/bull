@@ -94,13 +94,16 @@ def create(src, part=None, offset=None, size=None,
 
 
 @cli.command()
-def unmount():
-    pass
+@click.argument('device')
+def remove(device):
+    device = '/dev/mapper/{}'.format(device)
+    if blockdev.is_mounted(device):
+        print('mounted')
 
 
 @cli.command()
 def list():
-    pass
+    print('\n'.join(mapper.list_devices()))
 
 
 if __name__ == '__main__':

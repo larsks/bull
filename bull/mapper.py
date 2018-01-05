@@ -100,3 +100,11 @@ class MapperDevice():
             size=size, chunksize=chunksize)
 
         self.load(t)
+
+
+def list_devices(prefix='bull'):
+    res = mapper('ls', '--target', 'snapshot')
+    out = res.stdout.decode('utf-8')
+    return [line.split()[0]
+            for line in out.splitlines()
+            if line.startswith(prefix)]

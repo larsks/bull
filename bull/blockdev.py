@@ -79,3 +79,20 @@ def get_part_size_bytes(path, partnum):
     ssize = get_sector_size(path)
 
     return sectors * ssize
+
+
+def get_mounts():
+    mounts = []
+    with open('/proc/mounts') as fd:
+        for line in fd:
+            line = line.split()
+            mounts.append((line[0], line[1]))
+
+    return mounts
+
+
+def is_mounted(device):
+    mounts = {dev: path
+              for dev, path in get_mounts()}
+
+    return device in mounts
