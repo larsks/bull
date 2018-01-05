@@ -1,6 +1,7 @@
 import click
 import logging
 from pathlib import Path
+import subprocess
 import sys
 
 from bull import blockdev
@@ -57,7 +58,7 @@ def create(src, part=None, offset=None, size=None,
     src = Path(src)
 
     if not src.is_block_device():
-        loopdev = loop.LoopDevice(src)
+        loopdev = loop.LoopDevice(src=src)
         loopdev.create()
         src = loopdev.device
 
@@ -80,25 +81,34 @@ def create(src, part=None, offset=None, size=None,
 
     try:
         backing = zram.ZramDevice(size=backing_size)
-        cow = mapper.MapperDevice(name)
-        base = mapper.MapperDevice('{}-base'.format(cow.name))
+        snap = mapper.MapperDevice(name)
+        base = mapper.MapperDevice('{}-base'.format(snap.name))
         base.load("0 {} linear {} {}".format(
             size, src, offset
         ))
-        cow.snapshot(base.device, backing.device)
+        snap.snapshot(base.device, backing.device)
     except mapper.CommandFailed as e:
         print('ERROR:', e, ':', e.result.stderr.decode('utf-8'))
         sys.exit(1)
 
-    print('created', cow.name, cow.device)
+    print('created', snap.name, snap.device)
 
 
 @cli.command()
-@click.argument('device')
-def remove(device):
-    device = '/dev/mapper/{}'.format(device)
-    if blockdev.is_mounted(device):
-        print('mounted')
+@click.argument('name')
+def remove(name):
+    snap = mapper.MapperDevice(name=name)
+    if blockdev.is_mounted(snap.device):
+        subprocess.check_call(['umount', str(snap.device)])
+
+    base = mapper.MapperDevice(name='{}-base'.format(name))
+    srcdevnum = base.table()[0].split()[3].decode('utf-8')
+    srcdev = blockdev.devnum_to_name(srcdevnum)
+    loopdev = loop.LoopDevice(device='/dev/{}'.format(srcdev))
+
+    snap.remove()
+    base.remove()
+    loopdev.remove()
 
 
 @cli.command()

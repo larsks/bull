@@ -18,7 +18,7 @@ def losetup(*args):
 
 
 class LoopDevice():
-    def __init__(self, src, device=None, offset=None):
+    def __init__(self, src=None, device=None, offset=None):
         self.offset = 0 if offset is None else offset
         self.device = device
         self.src = src

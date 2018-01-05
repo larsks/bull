@@ -95,4 +95,11 @@ def is_mounted(device):
     mounts = {dev: path
               for dev, path in get_mounts()}
 
-    return device in mounts
+    return str(device) in mounts
+
+
+def devnum_to_name(devnum):
+    with open('/sys/dev/block/{}/uevent'.format(devnum)) as fd:
+        uevent = {k: v.strip() for k, v in [line.split('=', 1) for line in fd]}
+
+    return uevent['DEVNAME']
