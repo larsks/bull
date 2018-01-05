@@ -43,12 +43,9 @@ class MapperDevice():
         self.prefix = prefix
         self.name = name
 
-        if name is None:
-            self.find_next_device()
-        else:
-            self.create()
-
-        self.device = Path('/dev/mapper/{}'.format(self.name))
+    @property
+    def device(self):
+        return '/dev/mapper/{}'.format(self.name)
 
     def exists(self):
         try:
@@ -63,7 +60,9 @@ class MapperDevice():
         mapper('remove', self.name)
 
     def create(self):
-        if not self.exists():
+        if self.name is None:
+            self.find_next_device()
+        elif not self.exists():
             mapper('create', '-n', self.name)
 
     def find_next_device(self):
