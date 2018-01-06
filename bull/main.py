@@ -10,6 +10,7 @@ from bull import mapper
 from bull import zram
 
 LOG = logging.getLogger(__name__)
+MAX_BACKING_SIZE = 2**30
 
 
 class Size(click.ParamType):
@@ -46,11 +47,10 @@ def cli(loglevel=None):
 @cli.command()
 @click.option('--part', '-p', type=Size())
 @click.option('--offset', '-o', type=Size(), default=0)
-@click.option('--size', '-s', type=Size())
 @click.option('--backing-size', '-b', type=Size())
 @click.option('--name', '-n')
 @click.argument('src')
-def create(src, part=None, offset=None, size=None,
+def create(src, part=None, offset=None,
            name=None, backing_size=None):
     if not zram.check_zram_available():
         raise click.ClickException('ZRAM module is not available')
@@ -66,13 +66,12 @@ def create(src, part=None, offset=None, size=None,
 
     if part is not None:
         offset = blockdev.get_part_offset_sectors(src, part)
-        if size is None:
-            size = blockdev.get_part_size_sectors(src, part)
-    elif size is None:
+        size = blockdev.get_part_size_sectors(src, part)
+    else:
         size = blockdev.get_size_sectors(src) - offset
 
     if backing_size is None:
-        backing_size = size
+        backing_size = int(min(size * 0.25, MAX_BACKING_SIZE))
 
     LOG.debug('part %s, offset %s, size %s, backing_size %s',
               part, offset, size, backing_size)
