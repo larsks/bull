@@ -74,10 +74,8 @@ def create(src, part=None, offset=None, size=None,
     if backing_size is None:
         backing_size = size
 
-    print('part', part)
-    print('offset', offset)
-    print('size', size)
-    print('backing_size', backing_size)
+    LOG.debug('part %s, offset %s, size %s, backing_size %s',
+              part, offset, size, backing_size)
 
     try:
         backing = zram.ZramDevice(size=backing_size)
@@ -90,7 +88,7 @@ def create(src, part=None, offset=None, size=None,
         ))
         snap.snapshot(base.device, backing.device)
     except mapper.CommandFailed as e:
-        print('ERROR:', e, ':', e.result.stderr.decode('utf-8'))
+        LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
         sys.exit(1)
 
     print('created', snap.name, snap.device)
