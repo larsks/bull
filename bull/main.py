@@ -37,8 +37,9 @@ class Size(click.ParamType):
 
 
 @click.group()
-@click.option('--verbose', '-v', 'loglevel', flag_value='INFO',
-              default='WARNING')
+@click.option('--quiet', '-q', 'loglevel', flag_value='WARNING',
+              default=True)
+@click.option('--verbose', '-v', 'loglevel', flag_value='INFO')
 @click.option('--debug', '-d', 'loglevel', flag_value='DEBUG')
 def cli(loglevel=None):
     logging.basicConfig(level=loglevel)
@@ -52,6 +53,14 @@ def cli(loglevel=None):
 @click.argument('src')
 def create(src, part=None, offset=None,
            name=None, backing_size=None):
+
+    '''Create a snapshot of the given source.
+
+    Create a copy-on-write snapshot of the given source, using a ramdisk as the
+    snapshot backing store.  If the source is not a block device, first map it
+    onto a loop device.
+    '''
+
     if not zram.check_zram_available():
         raise click.ClickException('ZRAM module is not available')
 
@@ -60,9 +69,9 @@ def create(src, part=None, offset=None,
     if not src.is_block_device():
         loopdev = loop.LoopDevice(src=src)
         loopdev.create()
-        src = loopdev.device
 
-    LOG.info('using source %s', src)
+        LOG.info('mapped %s to %s', src, loopdev.device)
+        src = loopdev.device
 
     if part is not None:
         offset = blockdev.get_part_offset_sectors(src, part)
@@ -77,14 +86,24 @@ def create(src, part=None, offset=None,
               part, offset, size, backing_size)
 
     try:
-        backing = zram.ZramDevice(size=backing_size)
+        # We reserve a device name by creating a dm device with no table.
         snap = mapper.MapperDevice(name)
         snap.create()
+
+        # Now that we have reserved a device name, we can create the
+        # base device. This is a simple linear mapping onto the source,
+        # possibly with an offset applied if either --offset or --part
+        # were used.
         base = mapper.MapperDevice('{}-base'.format(snap.name))
         base.create()
         base.load("0 {} linear {} {}".format(
             size, src, offset
         ))
+
+        # Create a ramdisk for use as the snapshow backing store.
+        backing = zram.ZramDevice(size=backing_size)
+
+        # And finally create the snapshot itself.
         snap.snapshot(base.device, backing.device)
     except mapper.CommandFailed as e:
         LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
@@ -96,11 +115,19 @@ def create(src, part=None, offset=None,
 @cli.command()
 @click.argument('name')
 def remove(name):
+    '''Remove a bull snapshot.
+
+    Tear down the ramdisk, device mapper devices, and loopback
+    mounts associated with the bull snapshot. If the bull device is
+    mounted, attempt to unmount it first.
+    '''
+
     snap = mapper.MapperDevice(name=name)
     if not snap.exists():
         raise click.ClickException('device {} does not exist'.format(name))
 
     if blockdev.is_mounted(snap.device):
+        LOG.info('unmounting %s', name)
         subprocess.check_call(['umount', str(snap.device)])
 
     base = mapper.MapperDevice(name='{}-base'.format(name))
@@ -110,17 +137,27 @@ def remove(name):
     srcdev = blockdev.devnum_to_name(srcdevnum)
     loopdev = loop.LoopDevice(device='/dev/{}'.format(srcdev))
 
-    snap.remove()
-    backing.remove()
-    base.remove()
-    loopdev.remove()
+    try:
+        snap.remove()
+        backing.remove()
+        base.remove()
+        loopdev.remove()
+    except mapper.CommandFailed as e:
+        LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
+        sys.exit(1)
 
     print('removed', name)
 
 
 @cli.command()
 def list():
-    print('\n'.join(mapper.list_devices()))
+    '''List existing bull snapshots.'''
+
+    try:
+        print('\n'.join(mapper.list_devices()))
+    except mapper.CommandFailed as e:
+        LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
+        sys.exit(1)
 
 
 if __name__ == '__main__':
