@@ -18,10 +18,13 @@ class NoDevicesAvailable(MapperError):
     pass
 
 
-def mapper(*args):
+def mapper(*args, input=None):
     cli = ['dmsetup'] + [str(arg) for arg in args]
     LOG.debug('running command: %s', cli)
-    res = subprocess.run(cli, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    res = subprocess.run(cli,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE,
+                         input=input)
     if res.returncode != 0:
         raise CommandFailed(' '.join(cli), res)
 
@@ -83,7 +86,7 @@ class MapperDevice():
 
     def load(self, table):
         mapper('suspend', self.name)
-        mapper('load', self.name, '--table', table)
+        mapper('load', self.name, input=table.encode('ascii'))
         mapper('resume', self.name)
 
     def table(self):

@@ -49,9 +49,10 @@ def cli(loglevel=None):
 @click.option('--part', '-p', type=Size())
 @click.option('--offset', '-o', type=Size(), default=0)
 @click.option('--backing-size', '-b', type=Size())
+@click.option('--size', '-s', type=Size())
 @click.option('--name', '-n')
 @click.argument('src')
-def create(src, part=None, offset=None,
+def create(src, part=None, offset=None, size=None,
            name=None, backing_size=None):
 
     '''Create a snapshot of the given source.
@@ -75,15 +76,23 @@ def create(src, part=None, offset=None,
 
     if part is not None:
         offset = blockdev.get_part_offset_sectors(src, part)
-        size = blockdev.get_part_size_sectors(src, part)
+        datasize = blockdev.get_part_size_sectors(src, part)
     else:
-        size = blockdev.get_size_sectors(src) - offset
+        datasize = blockdev.get_size_sectors(src) - offset
+
+    if size is None:
+        size = datasize
+    elif size < datasize:
+        raise ValueError('requested size cannot be smaller than source')
+
+    size_sectors = int(size / 1024 * 2)
 
     if backing_size is None:
         backing_size = int(min(size * 0.25, MAX_BACKING_SIZE))
 
-    LOG.debug('part %s, offset %s, size %s, backing_size %s',
-              part, offset, size, backing_size)
+    LOG.debug('part %s offset %s datasize %s size %s '
+              'size_sectors %s backing_size %s',
+              part, offset, datasize, size, size_sectors, backing_size)
 
     try:
         # We reserve a device name by creating a dm device with no table.
@@ -96,9 +105,14 @@ def create(src, part=None, offset=None,
         # were used.
         base = mapper.MapperDevice('{}-base'.format(snap.name))
         base.create()
-        base.load("0 {} linear {} {}".format(
-            size, src, offset
-        ))
+        table = [
+            "0 {} linear {} {}".format(datasize, src, offset),
+        ]
+
+        if size_sectors > datasize:
+            table.append("{} {} zero".format(datasize, (size_sectors - datasize)))
+
+        base.load('\n'.join(table))
 
         # Create a ramdisk for use as the snapshow backing store.
         backing = zram.ZramDevice(size=backing_size)
@@ -135,13 +149,19 @@ def remove(name):
     backing = zram.ZramDevice(devnum=backingdevnum)
     srcdevnum = base.table()[0].split()[3].decode('utf-8')
     srcdev = blockdev.devnum_to_name(srcdevnum)
-    loopdev = loop.LoopDevice(device='/dev/{}'.format(srcdev))
+
+    if srcdev.startswith('loop'):
+        loopdev = loop.LoopDevice(device='/dev/{}'.format(srcdev))
+    else:
+        loopdev = None
 
     try:
         snap.remove()
         backing.remove()
         base.remove()
-        loopdev.remove()
+
+        if loopdev:
+            loopdev.remove()
     except mapper.CommandFailed as e:
         LOG.error('%s: %s', e, e.result.stderr.decode('utf-8'))
         sys.exit(1)
