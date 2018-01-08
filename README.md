@@ -108,3 +108,11 @@ The following happens:
         0 10485760 snapshot /dev/mapper/bull0-base /dev/zram0 N 16
 
 
+## Additional reading
+
+The kernel documentation includes information about the device mapper
+targets used in this code:
+
+- [zero](https://www.kernel.org/doc/Documentation/device-mapper/zero.txt)
+- [linear](https://www.kernel.org/doc/Documentation/device-mapper/linear.txt)
+- [snapshot](https://www.kernel.org/doc/Documentation/device-mapper/snapshot.txt)
