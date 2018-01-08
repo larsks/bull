@@ -1,3 +1,4 @@
+import attr
 import json
 from pathlib import Path
 import subprocess
@@ -15,10 +16,9 @@ def get_mounts():
     return mounts
 
 
+@attr.s
 class BlockDevice():
-
-    def __init__(self, device):
-        self.device = Path(device)
+    device = attr.ib(converter=Path)
 
     def get_device_info(self):
         with (self.sysfs / 'dev').open() as fd:
@@ -84,8 +84,3 @@ class BlockDevice():
                   for dev, path in get_mounts()}
 
         return str(self.device) in mounts
-
-    def __repr__(self):
-        return '<{} {}>'.format(
-            self.__class__.__name__,
-            self.device)
