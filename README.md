@@ -2,6 +2,48 @@
 
 It mounts COWS.
 
+## Usage
+
+### Create
+
+    Usage: bull create [OPTIONS] SRC
+
+      Create a snapshot of the given source.
+
+      Create a copy-on-write snapshot of the given source, using a ramdisk as
+      the snapshot backing store.  If the source is not a block device, first
+      map it onto a loop device.
+
+    Options:
+      -p, --part SIZE
+      -o, --offset SIZE
+      -b, --backing-size SIZE
+      -s, --snap-size SIZE
+      -n, --name TEXT
+      --help                   Show this message and exit.
+
+### Remove
+
+    Usage: bull remove [OPTIONS] NAME
+
+      Remove a bull snapshot.
+
+      Tear down the ramdisk, device mapper devices, and loopback mounts
+      associated with the bull snapshot. If the bull device is mounted, attempt
+      to unmount it first.
+
+    Options:
+      --help  Show this message and exit.
+
+### List
+
+    Usage: bull list [OPTIONS]
+
+      List existing bull snapshots.
+
+    Options:
+      --help  Show this message and exit.
+
 ## Examples
 
 ### Working with a Raspbian image
@@ -9,7 +51,7 @@ It mounts COWS.
 Create the COW device:
 
     # bull create --snap-size 3G --part 2 --backing-size 512MB \
-      /home/lars/Downloads/2017-11-29-raspbian-stretch-lite.img
+      2017-11-29-raspbian-stretch-lite.img
     created /dev/mapper/bull0
 
 Mount it:
@@ -33,3 +75,36 @@ Finish up (`bull` will automatically unmount the COW device if it is
 mounted):
 
     # bull remove bull0
+
+## Details
+
+When you run:
+
+    bull create --snap-size 3G --part 2 --backing-size 512MB \
+      2017-11-29-raspbian-stretch-lite.img
+
+The following happens:
+
+- Map the source file to a loop device using `losetup`.
+
+- Create a new device-mapper device named `bull0` with no table.
+
+- Create a new device-mapper device named `bull0-base` with no table.
+
+- Create a table for `bull0-base` that looks like:
+
+        0 3534848 linear /dev/loop0 94208
+        3534848 6950912 zero
+
+  The first segment maps onto the loop device we created in the
+  earlier step.  The second statement simply fills in the difference
+  between the size of our source and the size requested with
+  `--snap-size`.
+
+- Create a 512MB ramdisk for use as the backing store.
+
+- Create a table for `bull0` that looks like:
+
+        0 10485760 snapshot /dev/mapper/bull0-base /dev/zram0 N 16
+
+
