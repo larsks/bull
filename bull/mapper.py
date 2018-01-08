@@ -1,25 +1,17 @@
 import attr
+import functools
 import logging
 import subprocess
 
 from bull.blockdev import BlockDevice
+from bull.common import run_command
 from bull.exceptions import NoDevicesAvailable, DeviceExists
 
 LOG = logging.getLogger(__name__)
 MAX_DEVICES = 10
 
 
-def dmsetup(*args, input=None):
-    cli = ['dmsetup'] + [str(arg) for arg in args]
-    LOG.debug('running command: %s', ' '.join(cli))
-    if input is not None:
-        LOG.debug('with input: %s', repr(input))
-
-    return subprocess.run(cli,
-                          check=True,
-                          stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE,
-                          input=input)
+dmsetup = functools.partial(run_command, 'dmsetup')
 
 
 def resolve_device(dev):
@@ -174,6 +166,7 @@ class MapperDevice(BlockDevice):
 
     @classmethod
     def create(kls, name, exclusive=False):
+        LOG.debug('creating dm device %s', name)
         try:
             dmsetup('status', name)
             if exclusive:
@@ -202,13 +195,16 @@ class MapperDevice(BlockDevice):
         return kls('/dev/mapper/{}'.format(devname))
 
     def remove(self):
+        LOG.debug('removing dm device %s', self.device.name)
         dmsetup('remove', self.device.name)
 
     def load(self):
+        LOG.debug('loading table for dm device %s', self.device.name)
         dmsetup('suspend', self.device.name)
         dmsetup('load', self.device.name,
                 input=str(self.table).encode('ascii'))
         dmsetup('resume', self.device.name)
 
     def refresh(self):
+        LOG.debug('reading table for dm device %s', self.device.name)
         self.table = self.get_table_from_device()

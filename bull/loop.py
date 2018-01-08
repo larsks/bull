@@ -1,9 +1,13 @@
+import functools
 import logging
-import subprocess
 
 from bull.blockdev import BlockDevice
+from bull.common import run_command
 
 LOG = logging.getLogger(__name__)
+
+
+losetup = functools.partial(run_command, 'losetup')
 
 
 class LoopDevice(BlockDevice):
@@ -24,7 +28,7 @@ class LoopDevice(BlockDevice):
     @classmethod
     def create(kls, backing_file, offset=None, partscan=False,
                readonly=False, sizelimit=None):
-        cli = ['losetup', '--find', '--show']
+        cli = ['--find', '--show']
 
         if offset is not None:
             cli.append('--offset')
@@ -42,18 +46,15 @@ class LoopDevice(BlockDevice):
 
         cli.append(str(backing_file))
 
-        p = subprocess.run(cli,
-                           check=True,
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
+        p = losetup(*cli)
+        device = p.stdout.decode('ascii').strip()
 
-        return kls(p.stdout.decode('ascii').strip())
+        LOG.debug('created loop device %s', device)
+        return kls(device)
 
     def remove(self):
-        subprocess.run(['losetup', '-d', str(self.device)],
-                       check=True,
-                       stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+        LOG.debug('removing loop device %s', self.device.name)
+        losetup('-d', str(self.device))
 
     def exists(self):
         return super().exists() and (self.sysfs / 'loop').exists()

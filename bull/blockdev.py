@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 
 from bull.exceptions import NoPartitionMap
+from bull.common import run_command
 
 
 def get_mounts():
@@ -42,35 +43,20 @@ class BlockDevice():
         return minor
 
     def get_sector_size(self):
-        p = subprocess.run(['blockdev', '--getss', str(self.device)],
-                           check=True,
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-
+        p = run_command('blockdev', '--getss', str(self.device))
         return int(p.stdout.decode('ascii').strip())
 
     def get_size_bytes(self):
-        p = subprocess.run(['blockdev', '--getsize64', str(self.device)],
-                           check=True,
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-
+        p = run_command('blockdev', '--getsize64', str(self.device))
         return int(p.stdout.decode('ascii').strip())
 
     def get_size_sectors(self):
-        p = subprocess.run(['blockdev', '--getsz', str(self.device)],
-                           check=True,
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-
+        p = run_command('blockdev', '--getsz', str(self.device))
         return int(p.stdout.decode('ascii').strip())
 
     def get_part_table(self):
         try:
-            p = subprocess.run(['sfdisk', '--json', str(self.device)],
-                               check=True,
-                               stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE)
+            p = run_command('sfdisk', '--json', str(self.device))
         except subprocess.CalledProcessError:
             raise NoPartitionMap(self)
 

@@ -19,9 +19,11 @@ class ZramDevice(BlockDevice):
             with (kls.control_path / 'hot_add').open() as fd:
                 minor = fd.read().strip()
 
+        LOG.debug('created new zram device zram%s', minor)
         return kls('/dev/zram{}'.format(minor))
 
     def remove(self):
+        LOG.debug('removing zram device %s', self.device.name)
         with (self.control_path / 'hot_remove').open('w') as fd:
             fd.write('{}'.format(self.minor))
 
@@ -32,13 +34,14 @@ class ZramDevice(BlockDevice):
         return int(size)
 
     def set_size(self, size):
+        LOG.debug('set size of zram device %s to %s',
+                  self.device.name, size)
         with (self.sysfs / 'disksize').open('w') as fd:
             fd.write('{}'.format(size))
 
     size = property(get_size, set_size)
 
     def reset(self):
+        LOG.debug('resetting zram device %s', self.device.name)
         with (self.sysfs / 'reset').open('w') as fd:
             fd.write('1')
-
-
