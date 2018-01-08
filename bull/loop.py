@@ -11,6 +11,8 @@ losetup = functools.partial(run_command, 'losetup')
 
 
 class LoopDevice(BlockDevice):
+    '''A Linux loop device (like /dev/loop0)'''
+
     @property
     def backing_file(self):
         with (self.sysfs / 'loop' / 'backing_file').open() as fd:

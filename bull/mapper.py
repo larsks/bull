@@ -15,6 +15,8 @@ dmsetup = functools.partial(run_command, 'dmsetup')
 
 
 def resolve_device(dev):
+    '''Derive a device name from a major:minor pair'''
+
     if dev.startswith('/dev'):
         return dev
 
@@ -31,11 +33,17 @@ def resolve_device(dev):
 
 
 def list_devices(prefix='bull'):
+    '''Return a list of device mapper snapshot device names that start with the
+    given prefix.
+    '''
+
     p = dmsetup('ls', '--target', 'snapshot')
     return [line.split()[0].decode('ascii') for line in p.stdout.splitlines()]
 
 
 class Table(list):
+    '''Segment table for a device mapper device.'''
+
     @classmethod
     def from_string(kls, table):
         return kls([Segment.from_string(segment)
@@ -52,6 +60,8 @@ class Table(list):
 
 @attr.s
 class Segment():
+    '''A single segment in a device mapper table.'''
+
     start = attr.ib(converter=int)
     sectors = attr.ib(converter=int)
     target = attr.ib()
@@ -67,6 +77,8 @@ class Segment():
 
 @attr.s
 class Target():
+    '''A target in a device mapper device table'''
+
     device_attrs = []
 
     @classmethod
@@ -100,11 +112,13 @@ class Target():
 
 @attr.s
 class Zero(Target):
+    '''https://www.kernel.org/doc/Documentation/device-mapper/zero.txt'''
     pass
 
 
 @attr.s
 class Linear(Target):
+    '''https://www.kernel.org/doc/Documentation/device-mapper/linear.txt'''
     device_attrs = ['device']
 
     device = attr.ib(converter=str)
@@ -113,6 +127,7 @@ class Linear(Target):
 
 @attr.s
 class Snapshot(Target):
+    '''https://www.kernel.org/doc/Documentation/device-mapper/snapshot.txt'''
     device_attrs = ['origin', 'backing']
 
     def persistent_converter(arg):
@@ -131,6 +146,8 @@ class Snapshot(Target):
 
 @attr.s
 class Thinpool(Target):
+    '''https://www.kernel.org/doc/Documentation/device-mapper/thin-provisioning.txt'''  # NOQA
+
     device_attrs = ['metadata_dev', 'data_dev']
 
     metadata_dev = attr.ib(converter=str)
@@ -142,6 +159,8 @@ class Thinpool(Target):
 
 @attr.s
 class Thin(Target):
+    '''https://www.kernel.org/doc/Documentation/device-mapper/thin-provisioning.txt'''  # NOQA
+
     device_attrs = ['pool_dev']
 
     pool_dev = attr.ib(converter=str)
